@@ -1,29 +1,58 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (example: v1.0.5 or v1.2-rc1)"
+        required: true
+      prerelease:
+        description: "Is this a prerelease?"
+        required: true
+        type: boolean
+      custom_message:
+        description: "Optional release message"
+        required: false
+
+permissions:
+  contents: write
+
 env:
+  TAG_NAME: ${{ github.event.inputs.tag_name }}
   RELEASE_NAME: JS Engine - ${{ github.event.inputs.tag_name }} Release
 
 jobs:
   ensure-tag:
-    name: Create Tag (if needed)
+    name: Create Tag
     runs-on: ubuntu-latest
+
     outputs:
-      body: ${{ steps.pre_changelog_message.outputs.body }}
+      release_body: ${{ steps.release_body.outputs.body }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Fetch all tags
         run: git fetch --tags
 
-      - name: Create and push tag
+      - name: Create tag if missing
         run: |
           git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor }}@users.noreply.github.com"
-          git tag "${{ github.event.inputs.tag_name }}"
-          git push origin "${{ github.event.inputs.tag_name }}"
 
-      - name: Prepare pre-changelog message
-        id: pre_changelog_message
+          if git rev-parse "${{ env.TAG_NAME }}" >/dev/null 2>&1; then
+            echo "Tag already exists."
+          else
+            git tag "${{ env.TAG_NAME }}"
+            git push origin "${{ env.TAG_NAME }}"
+          fi
+
+      - name: Prepare release body
+        id: release_body
         run: |
           BODY=""
+
           if [ -n "${{ github.event.inputs.custom_message }}" ]; then
             BODY="${{ github.event.inputs.custom_message }}"
           fi
@@ -34,27 +63,132 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+  build:
+    name: Build Artifacts
+    needs: ensure-tag
+    uses: ./.github/workflows/main.yml
+    with:
+      buildFlags: officialBuild
+
   release-linux:
-    needs: [build, ensure-tag]
+    name: Release Linux Build
+    needs:
+      - build
+      - ensure-tag
+
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
         with:
           name: linuxBuild
           path: build
 
-      - run: |
+      - name: Compress Linux build
+        run: |
+          sudo apt-get update
           sudo apt-get install -y p7zip-full
           7z a -tzip linuxBuild.zip ./build/*
 
-      - name: Upload to GitHub Release
+      - name: Upload Linux release asset
         uses: svenstaro/upload-release-action@2.5.0
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.event.inputs.tag_name }}
+          tag: ${{ env.TAG_NAME }}
           release_name: ${{ env.RELEASE_NAME }}
           file: linuxBuild.zip
           asset_name: FNF-JS-Engine-linux.zip
-          prerelease: ${{ github.event.inputs.prerelease }}
-          body: ${{ needs.ensure-tag.outputs.body }}
           overwrite: true
+          prerelease: ${{ github.event.inputs.prerelease }}
+          body: ${{ needs.ensure-tag.outputs.release_body }}
+
+  release-windows:
+    name: Release Windows Build
+    needs:
+      - build
+      - ensure-tag
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windowsBuild
+          path: build
+
+      - name: Compress Windows build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          7z a -tzip windowsBuild.zip ./build/*
+
+      - name: Upload Windows release asset
+        uses: svenstaro/upload-release-action@2.5.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG_NAME }}
+          release_name: ${{ env.RELEASE_NAME }}
+          file: windowsBuild.zip
+          asset_name: FNF-JS-Engine-windows.zip
+          overwrite: true
+          prerelease: ${{ github.event.inputs.prerelease }}
+          body: ${{ needs.ensure-tag.outputs.release_body }}
+
+  release-mac:
+    name: Release macOS Build
+    needs:
+      - build
+      - ensure-tag
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install 7zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Download macOS Intel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macBuild-intel
+          path: build-intel
+
+      - name: Compress macOS Intel build
+        run: |
+          7z a -tzip macBuild-intel.zip ./build-intel/*
+
+      - name: Download macOS ARM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macBuild-arm
+          path: build-arm
+
+      - name: Compress macOS ARM build
+        run: |
+          7z a -tzip macBuild-arm.zip ./build-arm/*
+
+      - name: Upload macOS Intel release asset
+        uses: svenstaro/upload-release-action@2.5.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG_NAME }}
+          release_name: ${{ env.RELEASE_NAME }}
+          file: macBuild-intel.zip
+          asset_name: FNF-JS-Engine-macOS-Intel.zip
+          overwrite: true
+          prerelease: ${{ github.event.inputs.prerelease }}
+          body: ${{ needs.ensure-tag.outputs.release_body }}
+
+      - name: Upload macOS ARM release asset
+        uses: svenstaro/upload-release-action@2.5.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG_NAME }}
+          release_name: ${{ env.RELEASE_NAME }}
+          file: macBuild-arm.zip
+          asset_name: FNF-JS-Engine-macOS-ARM.zip
+          overwrite: true
+          prerelease: ${{ github.event.inputs.prerelease }}
